@@ -14,7 +14,6 @@ class MaxDCSReward:
 
     def __call__(self, best_vertex_ids, ground_truth_id,
                  total_distance_computations, actions, **etc):
-        print(best_vertex_ids, ground_truth_id, self.k)
         assert len(best_vertex_ids) >= self.k
         assert len(ground_truth_id) >= self.k
 
