@@ -1,5 +1,6 @@
 """
 Various Policy Optimization algorithms
+In all our final experiments we use EfficientTRPO
 """
 import torch
 import numpy as np
@@ -13,7 +14,7 @@ class BaseAlgorithm:
     def __init__(self, agent, hnsw, reward, baseline=None, writer=None, device='cuda'):
         """
         :type agent: lib.agent.BaseAgent
-        :type hnsw: lib.hnsw.HNSW
+        :type hnsw: lib.hnsw.BaseHNSW
         :type reward: function **session_records: vector of rewards for each action in session
         :type baseline: lib.baseline.BaselineInterface
         """
@@ -92,7 +93,8 @@ class BaseAlgorithm:
                                   for rec in session_records])
             counters[prefix + '/recall@%i' % k] = recall_all
             counters[prefix + '/recall@%i_per_distance_computation' % k] = \
-                np.mean([float(len(set(rec['best_vertex_ids']) & set(rec['ground_truth_id'][:k].tolist()))) / (rec['total_distance_computations'] * k)
+                np.mean([float(len(set(rec['best_vertex_ids']) & set(rec['ground_truth_id'][:k].tolist()))) /
+                         (rec['total_distance_computations'] * k)
                          for rec in session_records])
         if write_logs:
             for key, value in counters.items():
@@ -125,7 +127,7 @@ class BaseAlgorithm:
 
     @staticmethod
     def aggregate_samples(from_vertex_ids, to_vertex_ids, actions, advantages, device='cuda'):
-        """ Merge the same samples """
+        """ Merge the same samples for computational efficiency """
         from_vertex_ids = from_vertex_ids.tolist()
         to_vertex_ids = to_vertex_ids.tolist()
         actions = actions.tolist()
@@ -387,12 +389,23 @@ class TRPO(BaseAlgorithm):
 
 
 class EfficientTRPO(TRPO):
-    """ Optimized Trust Region Policy Optimization """
+    """ Efficient implementation of Trust Region Policy Optimization """
 
-    def __init__(self, agent, hnsw, reward, baseline, samples_in_batch=95000, Fvp_speedup=5, Fvp_type='fim', **kwargs):
+    def __init__(self, agent, hnsw, reward, baseline, samples_in_batch=95000,
+                 Fvp_speedup=5, Fvp_min_batches=5, Fvp_type='fim', **kwargs):
+        """
+        :param samples_in_batch: number of samples in a batch that is fed to agent.
+                                 Helps to fit memory limitations.
+        :param Fvp_speedup: fraction of samples for Fvp computation.
+                            Reflects on the iteration time (<10 is fine)
+        :param Fvp_min_batches: minimum number of batches for Fvp computation.
+                                Prevents from getting too few samples for Fvp calculation
+        :param Fvp_type: one of two options for Fvp computation: ['forward', 'fim']
+        """
         super().__init__(agent, hnsw, reward, baseline, **kwargs)
         self.samples_in_batch = samples_in_batch
         self.Fvp_speedup = Fvp_speedup
+        self.Fvp_min_batches = Fvp_min_batches
         self.Fvp_type = Fvp_type
 
     def train_on_batch(self, state, from_vertex_ids, to_vertex_ids, actions, rewards, session_index, **kwargs):
@@ -444,7 +457,7 @@ class EfficientTRPO(TRPO):
         def Fvp_forward(v):
             # Here we compute Fx to do solve Fx = g using conjugate gradients
             flat_grad_grad_kl = 0
-            min_nbatches = min(self.Fvp_speedup, len(batches_freqs))
+            min_nbatches = min(self.Fvp_min_batches, len(batches_freqs))
             nbatches = max(len(batches_freqs) // self.Fvp_speedup, min_nbatches)
 
             for i_batch, (batch_from_vertex_ids, batch_to_vertex_ids, batch_old_logp, batch_freqs) in \
@@ -466,7 +479,7 @@ class EfficientTRPO(TRPO):
         # Fisher vector product Requires ~15% less memory
         def Fvp_fim(v):
             JTMJv = 0
-            min_nbatches = min(self.Fvp_speedup, len(batches_freqs))
+            min_nbatches = min(self.Fvp_min_batches, len(batches_freqs))
             nbatches = max(len(batches_freqs) // self.Fvp_speedup, min_nbatches)
 
             for (batch_from_vertex_ids, batch_to_vertex_ids, batch_freqs) in \
