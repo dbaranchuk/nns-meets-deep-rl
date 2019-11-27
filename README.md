@@ -17,7 +17,7 @@ We formulate the similarity graph construction as Markov Decision Process.
 
 ## Toy Example
 
-The graph constructed on 100 vectors from the MNIST8x8 dataset. The optimization is performed over a complete graph. Colors correspond to the MNIST class labels. The nodes providing efficient graph navigation (hubs) are denoted by large sizes. Each MNIST class contains up to two hubs.
+The graph constructed on 100 vectors from the MNIST8x8 dataset. The optimization is performed over the complete graph. Colors correspond to the MNIST class labels. The nodes providing efficient graph navigation (hubs) are denoted by large sizes. Each MNIST class contains up to two hubs.
 
 <img src="./resources/toy_example.png" width=700px>
 
