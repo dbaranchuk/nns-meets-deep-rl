@@ -104,8 +104,6 @@ def read_info(filename):
             else:
                 info['elementLevels'].append(linklist_size // info['size_links_per_element'])
 
-                if i == 88298:
-                    print(info['elementLevels'][-1])
                 for level in range(info['elementLevels'][-1]):
                     bytes = f.read(info['size_links_per_element'])
                     size = int(unpack('<H', bytes[:2])[0])
