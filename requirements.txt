@@ -1,5 +1,5 @@
-numpy==1.16.5
-torch==1.2.0
+numpy>=1.16.5
+torch>=1.2.0
 pandas
 matplotlib
 tqdm

@@ -23,9 +23,6 @@ void find_nearest(int nb, int d1, float *vertices,               // matrix [n_ve
     assert(*nt > 0 && *ef > 0);
     assert(*k <= *ef);
 
-    const float min_prob = 0.0001;
-    const float max_prob = 0.9999;
-
 #pragma omp parallel for num_threads(*nt)
     for (int32_t q = 0; q < nq; q++) {
         std::unordered_set <idx_t> visited_ids;
@@ -38,7 +35,12 @@ void find_nearest(int nb, int d1, float *vertices,               // matrix [n_ve
         int *actions = results + num_results * q + *k + 2;
         int *trajectory = trajectories + max_path * q;
 
-        float distance = fvec_L2sqr(query, vertices + d * *initial_vertex_id, d);
+        float distance;
+        if (d == 300)  // Hard code for GloVe data
+            distance = fvec_negative_dot(query, vertices + d * *initial_vertex_id, d);
+        else
+            distance = fvec_L2sqr(query, vertices + d * *initial_vertex_id, d);
+
         size_t num_dcs = 1;
         size_t num_hops = 0;
 
@@ -67,7 +69,7 @@ void find_nearest(int nb, int d1, float *vertices,               // matrix [n_ve
                     *action = -2;
                     continue;
                 }
-                if (prob < min_prob){
+                if (prob < 0){
                     *action = -2;
                     continue;
                 }
@@ -75,7 +77,10 @@ void find_nearest(int nb, int d1, float *vertices,               // matrix [n_ve
                 if (*action == 0) continue;
 
                 visited_ids.insert(neighbor_id);
-                distance = fvec_L2sqr(query, vertices + d * neighbor_id, d);
+                if (d == 300)  // Hard code for GloVe data
+                    distance = fvec_negative_dot(query, vertices + d * *initial_vertex_id, d);
+                else
+                    distance = fvec_L2sqr(query, vertices + d * *initial_vertex_id, d);
                 num_dcs++;
 
                 if (ef_top.top().first > distance || ef_top.size() < (size_t) *ef) {
@@ -86,7 +91,7 @@ void find_nearest(int nb, int d1, float *vertices,               // matrix [n_ve
                         ef_top.pop();
                     lowerBound = ef_top.top().first;
                 }
-                if (prob > max_prob)
+                if (prob > 1)
                     *action = -2;
             }
             trajectory[num_hops++] = vertex_id;
@@ -183,4 +188,60 @@ float fvec_L2sqr(const float *x, const float *y, size_t d) {
 
     return (res);
 #endif
+}
+
+/** Fast negative dot pruduct Computation (Needed for correct distance computations on GloVe1M)
+ *
+ * @param x
+ * @param y
+ * @param d - vector dimensionality
+ * @return - l2 distance between x and y
+*/
+// reads 0 <= d < 4 floats as __m128
+static inline __m128 masked_read (int d, const float *x)
+{
+    assert (0 <= d && d < 4);
+    __attribute__((__aligned__(16))) float buf[4] = {0, 0, 0, 0};
+    switch (d) {
+        case 3:
+            buf[2] = x[2];
+        case 2:
+            buf[1] = x[1];
+        case 1:
+            buf[0] = x[0];
+    }
+    return _mm_load_ps (buf);
+    // cannot use AVX2 _mm_mask_set1_epi32
+}
+
+float fvec_negative_dot(const float *x, const float *y, size_t d)
+{
+    __m256 msum1 = _mm256_setzero_ps();
+
+    while (d >= 8) {
+        __m256 mx = _mm256_loadu_ps (x); x += 8;
+        __m256 my = _mm256_loadu_ps (y); y += 8;
+        msum1 = _mm256_add_ps (msum1, _mm256_mul_ps (mx, my));
+        d -= 8;
+    }
+
+    __m128 msum2 = _mm256_extractf128_ps(msum1, 1);
+    msum2 +=       _mm256_extractf128_ps(msum1, 0);
+
+    if (d >= 4) {
+        __m128 mx = _mm_loadu_ps (x); x += 4;
+        __m128 my = _mm_loadu_ps (y); y += 4;
+        msum2 = _mm_add_ps (msum2, _mm_mul_ps (mx, my));
+        d -= 4;
+    }
+
+    if (d > 0) {
+        __m128 mx = masked_read (d, x);
+        __m128 my = masked_read (d, y);
+        msum2 = _mm_add_ps (msum2, _mm_mul_ps (mx, my));
+    }
+
+    msum2 = _mm_hadd_ps (msum2, msum2);
+    msum2 = _mm_hadd_ps (msum2, msum2);
+    return  -_mm_cvtss_f32 (msum2);
 }

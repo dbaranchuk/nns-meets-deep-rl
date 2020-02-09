@@ -31,6 +31,7 @@
 typedef unsigned idx_t;
 
 float fvec_L2sqr(const float *x, const float *y, size_t d);
+float fvec_negative_dot(const float *x, const float *y, size_t d);
 
 void find_nearest(int nb, int d1, float *vertices,               // matrix [n_vertices, vec_dimension]
                   int nb1, int max_degree, int *edges,           // matrix [n_vertices, max_degree]

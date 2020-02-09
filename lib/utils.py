@@ -15,8 +15,8 @@ def knn(base, queries, n_jobs=1, batch_size=1000, n_neighbors=1):
     knn = NearestNeighbors(n_neighbors=n_neighbors, algorithm='brute', n_jobs=n_jobs)
     knn.fit(base)
     idxs = []
-    if len(queries) >= batch_size:
-        batches_queries = queries.split(len(queries) // batch_size)
+    if len(queries) > batch_size:
+        batches_queries = queries.split(batch_size)
     else:
         batches_queries = [queries]
 
@@ -78,41 +78,6 @@ def read_edges(filename, max_size=None):
             edges[len(edges)] = vec
             if len(edges) >= max_size: break
     return edges
-
-
-def read_info(filename):
-    info  = {}
-    with open(filename, "rb") as f:
-        info['maxelements_'], = unpack('<Q', f.read(8))
-        info['enterpoint_node'], = unpack('<i', f.read(4))
-        info['data_size'], = unpack('<Q', f.read(8))
-        info['offset_data'], = unpack('<Q', f.read(8))
-        info['size_data_per_element'], = unpack('<Q', f.read(8))
-        info['M_'], = unpack('<Q', f.read(8))
-        info['maxM_'], = unpack('<Q', f.read(8))
-        info['size_links_level0'], = unpack('<Q', f.read(8))
-        info['size_links_per_element'], = unpack('<Q', f.read(8))
-
-        info['elementLevels'] = []
-        info['max_level'] = 0
-        info['level_edges'] = []
-        for i in range(info['maxelements_']):
-            linklist_size, = unpack('<i', f.read(4))
-            level_edges = {}
-            if linklist_size == 0:
-                info['elementLevels'].append(0)
-            else:
-                info['elementLevels'].append(linklist_size // info['size_links_per_element'])
-
-                for level in range(info['elementLevels'][-1]):
-                    bytes = f.read(info['size_links_per_element'])
-                    size = int(unpack('<H', bytes[:2])[0])
-                    level_edges[level] = unpack(size * 'i', bytes[2: size*4+2])
-
-            info['level_edges'].append(level_edges)
-
-        info['max_level'] = max(info['elementLevels'])
-    return info
 
 
 def read_nsg(filename, max_size=None):

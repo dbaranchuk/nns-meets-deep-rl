@@ -1,5 +1,4 @@
 from heapq import heappush, heappop, nlargest, nsmallest
-from enum import Enum
 import numpy as np
 import torch
 
@@ -7,15 +6,14 @@ import multiprocessing
 from .search_hnsw_swig import search_hnsw
 
 
-class BaseHNSW:
-    def __init__(self, graph, ef=1, k=1):
+class HNSW:
+    def __init__(self, graph, ef=1):
         """ Main class that handles approximate nearest neighbor search using HNSW heap-based search algorithm.
             :param graph: graph on which the search algorithm is performed
             :param ef: regulates the search algorithm "greediness"
         """
         self.graph = graph
         self.ef = ef
-        self.k = k
 
     def get_enterpoint(self, query, **kwargs):
         vertex_id = self.get_initial_vertex_id(**kwargs)
@@ -77,8 +75,8 @@ class BaseHNSW:
 
             visited_ids.update(neighbor_ids)
 
-        best_vertex_ids = [x[1] for x in nlargest(self.k, topResults)]
-        return best_vertex_ids
+        best_neighbor_id = nlargest(1, topResults)[0][1]
+        return best_neighbor_id
 
     def start_session(self):
         """ Resets all logs """
@@ -101,88 +99,31 @@ class BaseHNSW:
         return ((vector - vector_or_vectors) ** 2).sum(-1)
 
 
-class HNSW(BaseHNSW):
-    """
-    Slow version of HNSW search algorithm that incorporates agent to predict edges. Records agent actions for training.
-    This class is only needed for hierarchical graph setting which is out of the scope of our evaluation.
-    If someone needs hierarchical graph support, please contact me and I'll transfer it to C++.
-    In other cases use ParallelHNSW.
-    """
-
-    def record_sessions(self, agent, queries, state=None, **kwargs):
-        """
-        Finds nearest neighbors for several queries, computes reward and returns all that
-        :param agent: lib.agent.BaseAgent
-        :param queries: a batch of query vectors
-            :return: a dict with a lot of metrics
-        """
-        if state is None:
-            state = agent.prepare_state(self.graph, **kwargs)
-
-        session_records = []
-        for i, query in enumerate(queries):
-            self.start_session()
-            best_vertex_ids = self.find_nearest(query, agent=agent, state=state, **kwargs)
-            rec = self.get_recorded_predictions()
-            rec.update(
-                best_vertex_id=best_vertex_ids[0],
-                best_vertex_ids=best_vertex_ids,
-                distance_computations=list(self._distance_computations),
-                total_distance_computations=sum(self._distance_computations),
-                num_hops=len(self._distance_computations) - 1,
-            )
-            session_records.append(rec)
-        return session_records
-
-    def start_session(self):
-        """ Resets all logs and cache """
-        super().start_session()
-        self._edge_cache = {}  # (from_vertex_id, to_vertex_id) -> True/False
-
-    def get_neighbors(self, vertex_id, visited_ids, agent=None, **kwargs):
-        assert agent is not None, "please specify agent"
-
-        neighbors = list(self.graph.edges[vertex_id])
-        actions = agent.predict_edges(vertex_id, neighbors, **kwargs)
-
-        chosen_neighbors = []
-        for neighbor_id, action in zip(neighbors, actions):
-            if neighbor_id in visited_ids: continue
-            self._edge_cache[vertex_id, neighbor_id] = action
-            if action: chosen_neighbors.append(neighbor_id)
-        return chosen_neighbors
-
-    def get_recorded_predictions(self):
-        """ Get all the information recorded about agent actions in current session """
-        history = []
-        for edge, action in self._edge_cache.items():
-            history.append((*edge, action))
-        from_vertex_ids, to_vertex_ids, actions = zip(*history)
-        return dict(from_vertex_ids=from_vertex_ids,
-                    to_vertex_ids=to_vertex_ids,
-                    actions=actions,)
-
-
-class ServiceLabel(Enum):
-    PAD = -1
-    UNUSED = -2
-
-
-class ParallelHNSW(BaseHNSW):
-    def __init__(self, graph, ef=1, k=1, max_trajectory=80, batch_size=100000, n_jobs=1):
-        """ Optimized HNSW for fast session sampling. Uses wrapped C++ code for HNSW search algorithm
+class ParallelHNSW(HNSW):
+    def __init__(self, graph, k=1, ef=1, max_trajectory=80, batch_size=500000,
+                 edge_patience=100, n_jobs=1):
+        """ Optimized EdgeHNSW for fast session sampling. Uses wrapped C++ code for HNSW search algorithm
             :param max_trajectory: maximum expected number of hops. Needed for swig.
                    The larger ef is, the larger max_trajectory you should set
             :param batch_size: number of edges in batch
             :param n_jobs: number of threads for C++ session sampling
         """
-        super().__init__(graph, ef, k)
-        assert graph.graph_type != 'hnsw', 'hnsw.ParallelHNSW does not support hierarchy. Use hnsw.HNSW.'
+        super().__init__(graph, ef)
+        assert graph.graph_type != 'hnsw', 'hnsw.ParallelHNSW does not support hierarchy. Use hnsw.EdgeHNSW.'
 
+        self.k = k
         self.max_trajectory = max_trajectory
         self.n_jobs = self._check_n_jobs(n_jobs)
+
         self.batch_size = batch_size
+        self.edge_patience = edge_patience
+        self.edge_confidence = []
+
         self.num_edges = 0
+        self.num_confident = 0
+
+        # Service labels to denote service fields and boundary situations
+        self.service_labels = {'pad': -1, 'unused': -2, 'no_actions': -3}
 
         self.from_vertex_ids, self.to_vertex_ids, self.degrees = [], [], []
         chunk_from_vertex_ids, chunk_to_vertex_ids, chunk_degrees = [], [], []
@@ -194,56 +135,79 @@ class ParallelHNSW(BaseHNSW):
             chunk_degrees.append(degree)
             if sum(chunk_degrees) > self.batch_size:
                 self.num_edges += sum(chunk_degrees)
-                self.from_vertex_ids.append(chunk_from_vertex_ids)
-                self.to_vertex_ids.append(chunk_to_vertex_ids)
-                self.degrees.append(chunk_degrees)
+                self.from_vertex_ids.append(np.array(chunk_from_vertex_ids))
+                self.to_vertex_ids.append(np.array(chunk_to_vertex_ids))
+                self.degrees.append(np.array(chunk_degrees))
+                self.edge_confidence.append(np.zeros(sum(chunk_degrees)))
                 chunk_from_vertex_ids, chunk_to_vertex_ids, chunk_degrees = [], [], []
 
         # Remained samples
         if len(chunk_degrees) > 0:
             self.num_edges += sum(chunk_degrees)
-            self.from_vertex_ids.append(chunk_from_vertex_ids)
-            self.to_vertex_ids.append(chunk_to_vertex_ids)
-            self.degrees.append(chunk_degrees)
+            self.from_vertex_ids.append(np.array(chunk_from_vertex_ids))
+            self.to_vertex_ids.append(np.array(chunk_to_vertex_ids))
+            self.degrees.append(np.array(chunk_degrees))
+            self.edge_confidence.append(np.zeros(sum(chunk_degrees)))
 
     @torch.no_grad()
-    def prepare_edges_with_probs(self, agent, state, **kwargs):
-        probs = np.full([state.vertices.size(0), self.graph.max_degree],
-                        ServiceLabel.PAD.value, dtype=np.float32)
-        edges = np.full([state.vertices.size(0), self.graph.max_degree],
-                        ServiceLabel.PAD.value, dtype=np.int32)
-        for i in range(len(self.from_vertex_ids)):
-            edge_logp = agent.get_edge_logp(self.from_vertex_ids[i],
-                                            self.to_vertex_ids[i],
-                                            state=state, **kwargs)[:, 1]
-            edge_probs = edge_logp.to(device='cpu').exp()
-            idx = 0
-            for degree in self.degrees[i]:
-                vertex_id = self.from_vertex_ids[i][idx]
-                probs[vertex_id, :degree] = edge_probs[idx: idx + degree]
-                edges[vertex_id, :degree] = self.to_vertex_ids[i][idx: idx + degree]
-                idx += degree
+    def prepare_edges_with_probs(self, agent, state=None, is_evaluate=False, greedy=False, **kwargs):
+        """ :param state: cached agent memory state. If not specified, calls agent.prepare_state """
+        probs = np.full([state.vertices.size(0), self.graph.max_degree], self.service_labels['pad'], dtype=np.float32)
+        edges = np.full([state.vertices.size(0), self.graph.max_degree], self.service_labels['pad'], dtype=np.int32)
 
+        if state is None:
+            state = agent.prepare_state(self.graph, **kwargs)
+
+        upper_prob_bound = 0.99989
+        lower_prob_bound = 0.00011
+
+        for i in range(len(self.from_vertex_ids)):
+            edge_logp = agent.get_edge_logp(self.from_vertex_ids[i], self.to_vertex_ids[i],
+                                            state=state, **kwargs).cpu()
+            if greedy:
+                edge_probs = edge_logp.argmax(-1).numpy()
+            else:
+                edge_probs = edge_logp[:, 1].exp().numpy()
+
+            # Freeze edges that are consistently confident.
+            # Set probs of confident edges to 1.1 or -0.1 to indicate the search algorithm do not sample them
+            edge_probs[self.edge_confidence[i] == self.edge_patience] = 1.1
+            edge_probs[self.edge_confidence[i] == -self.edge_patience] = -0.1
+
+            if not is_evaluate:
+                self.edge_confidence[i][(1. > edge_probs) & (edge_probs > upper_prob_bound)] += 1.
+                self.edge_confidence[i][(0. < edge_probs) & (edge_probs < lower_prob_bound)] -= 1.
+                self.edge_confidence[i][(self.edge_confidence[i] > 0) & (edge_probs < upper_prob_bound)] = 0.
+                self.edge_confidence[i][(self.edge_confidence[i] < 0) & (edge_probs > lower_prob_bound)] = 0.
+
+            idxs = np.cumsum(self.degrees[i][:-1])
+            idxs = np.pad(idxs, (1, 0), 'constant', constant_values=0)
+            vertex_ids = self.from_vertex_ids[i][idxs]
+
+            mask = np.arange(self.graph.max_degree) < self.degrees[i][:, None]
+            m_probs = np.full_like(mask, self.service_labels['pad'], dtype=np.float32)
+            m_probs[mask] = edge_probs
+            probs[vertex_ids] = m_probs
+
+            m_edges = np.full_like(mask, self.service_labels['pad'], np.float32)
+            m_edges[mask] = self.to_vertex_ids[i]
+            edges[vertex_ids] = m_edges
+
+        torch.cuda.empty_cache()
         return edges, probs
 
-    def record_sessions(self, agent, queries, state=None, **kwargs):
+    def record_sessions(self, agent, queries, **kwargs):
         """
         finds nearest neighbors for several queries, computes reward and returns all that
         :param agent: lib.agent.BaseAgent
         :param queries: a batch of query vectors
-        :param state: cached agent memory state. If not specified, calls agent.prepare_state
         :return: a dict with a lot of metrics
         """
-        if state is None:
-            state = agent.prepare_state(self.graph, **kwargs)
-
+        edges, edge_probs = self.prepare_edges_with_probs(agent, **kwargs)
         num_actions = self.max_trajectory * self.graph.max_degree
         num_results = self.k + 2 + num_actions
-        search_results = np.full([queries.shape[0], num_results],
-                                 ServiceLabel.PAD.value, dtype=np.int32)
-        edges, edge_probs = self.prepare_edges_with_probs(agent, state, **kwargs)
-        trajectories = np.full([queries.shape[0], self.max_trajectory],
-                               ServiceLabel.PAD.value, dtype=np.int32)
+        search_results = np.full([queries.shape[0], num_results], self.service_labels['pad'], dtype=np.int32)
+        trajectories = np.full([queries.shape[0], self.max_trajectory], self.service_labels['pad'], dtype=np.int32)
         uniform_samples = np.random.rand(queries.shape[0], num_actions).astype(np.float32)
 
         # search_results = [:, answer, dcs, hps]
@@ -259,28 +223,20 @@ class ParallelHNSW(BaseHNSW):
         best_vertex_ids = search_results[:, :self.k]
         total_distance_computations = search_results[:, self.k]
         num_hops = search_results[:, self.k + 1]
+        total_actions = search_results[:, self.k + 2:]
 
         for i in range(queries.shape[0]):
-            trajectory = trajectories[i][:num_hops[i]]
-            session_actions = search_results[i, self.k + 2:]
-            actions = session_actions[session_actions != ServiceLabel.PAD.value]
-            actions = actions[actions != ServiceLabel.UNUSED.value]
+            trajectory = trajectories[i, :num_hops[i]]
+            session_actions = total_actions[i, :num_hops[i]*self.graph.max_degree]
+            session_edges = edges[trajectory].reshape(-1)
+            session_mask = (session_actions != self.service_labels['pad']) & \
+                           (session_actions != self.service_labels['unused'])
+            actions = session_actions[session_mask]
+            to_vertex_ids = session_edges[session_mask]
 
-            from_vertex_ids = np.zeros(len(actions), dtype=np.int32)
-            to_vertex_ids = np.zeros(len(actions), dtype=np.int32)
-            border = 0
-            for from_ix_id, from_ix in enumerate(trajectory):
-                vertex_actions = session_actions[from_ix_id * self.graph.max_degree:
-                                                (from_ix_id + 1) * self.graph.max_degree]
-
-                edges = np.array(self.graph.edges[from_ix], dtype=np.int32)
-                vertex_actions = vertex_actions[:len(edges)]
-                mask = vertex_actions != ServiceLabel.UNUSED.value
-                num_samples = mask.sum()
-
-                from_vertex_ids[border: border + num_samples] = from_ix
-                to_vertex_ids[border: border + num_samples] = edges[mask]
-                border += num_samples
+            idxs = np.arange(1, len(trajectory)) * self.graph.max_degree
+            session_num_samples = np.array(np.array_split(session_mask, idxs)).sum(-1)
+            from_vertex_ids = np.repeat(trajectory, session_num_samples)
 
             rec = dict(
                 from_vertex_ids=from_vertex_ids.tolist(),

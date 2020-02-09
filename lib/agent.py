@@ -7,9 +7,9 @@ class BaseAgent(nn.Module):
     # State is arbitrary information that agent needs to compute about its graph. Immutable.
     State = namedtuple("AgentState", ['vertices'])
 
-    def prepare_state(self, graph, **kwargs):
+    def prepare_state(self, graph, device='cpu', **kwargs):
         """ Pre-computes graph representation for further use in edge prediction """
-        return self.State(vertices=graph.vertices)
+        return self.State(vertices=graph.vertices.to(device=device))
 
     def predict_edges(self, vertex_id, neighbor_ids, state, **kwargs):
         """
@@ -30,14 +30,6 @@ class ProbabilisticAgent(BaseAgent):
         * `predict_edges` which uses edges' logprobs to predict them.
             Normally, you shouldn't override it.
     """
-
-    # State is arbitrary information that agent needs to compute about its graph. Immutable.
-    State = namedtuple("AgentState", ['vertices', 'logp_cache'])
-
-    def prepare_state(self, graph, **kwargs):
-        """ Pre-computes graph representation for further use in edge prediction """
-        return self.State(vertices=graph.vertices, logp_cache={})
-
     def get_edge_logp(self, from_vertex_ids, to_vertex_ids, *, state, device='cpu', **kwargs):
         """ Take vertices and predict probability of an edge between them. """
         raise NotImplementedError
@@ -88,7 +80,6 @@ class SimpleNeuralAgent(ProbabilisticAgent):
         :return: log-probabilities of taking and not taking edge between vertex1 and vertex2,
             shape: [batch_size, 2]
         """
-
         vertices_from = state.vertices[from_vertex_ids, :].to(device=device)
         vertices_to = state.vertices[to_vertex_ids, :].to(device=device)
 
