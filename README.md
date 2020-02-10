@@ -1,7 +1,8 @@
 # Towards Similarity Graphs Constructed by Deep Reinforcement Learning
 Code for [paper](https://arxiv.org/abs/1911.12122) (The updated version will be released soon)
 
-**NEW:** latest commit (02/2020) up to 5 times boost in efficiency, accuracy improvement, more million-scale experiments
+**NEW:** latest commit (02/2020) up to 5 times boost in training procedure
+efficiency, accuracy improvement, more million-scale experiments
 
 ## Overview
 
