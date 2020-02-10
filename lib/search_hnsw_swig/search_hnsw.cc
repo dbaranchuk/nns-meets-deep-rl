@@ -78,9 +78,9 @@ void find_nearest(int nb, int d1, float *vertices,               // matrix [n_ve
 
                 visited_ids.insert(neighbor_id);
                 if (d == 300)  // Hard code for GloVe data
-                    distance = fvec_negative_dot(query, vertices + d * *initial_vertex_id, d);
+                    distance = fvec_negative_dot(query, vertices + d * neighbor_id, d);
                 else
-                    distance = fvec_L2sqr(query, vertices + d * *initial_vertex_id, d);
+                    distance = fvec_L2sqr(query, vertices + d * neighbor_id, d);
                 num_dcs++;
 
                 if (ef_top.top().first > distance || ef_top.size() < (size_t) *ef) {
