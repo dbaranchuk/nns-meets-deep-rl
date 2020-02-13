@@ -1,7 +1,7 @@
 # Towards Similarity Graphs Constructed by Deep Reinforcement Learning
 Code for [paper](https://arxiv.org/abs/1911.12122)
 
-**NEW** new version (02/2020) up to x5 training speed-up ; more million-scale experiments
+**NEW version (02/2020)** up to x5 training speed-up ; more million-scale experiments
 
 ## Overview
 
