@@ -1,8 +1,7 @@
 # Towards Similarity Graphs Constructed by Deep Reinforcement Learning
-Code for [paper](https://arxiv.org/abs/1911.12122) (The updated version will be released soon)
+Code for [paper](https://arxiv.org/abs/1911.12122)
 
-**NEW:** latest commit (02/2020) up to 5 times boost in training procedure
-efficiency, accuracy improvement, more million-scale experiments
+**NEW** new version (02/2020) up to x5 training speed-up ; more million-scale experiments
 
 ## Overview
 
@@ -44,4 +43,4 @@ The graph constructed on 100 vectors from the MNIST8x8 dataset. The optimization
 
 Final hyperparameters can be found in Appendix. Not listed ones are set by default in jupyter notebooks in `./notebooks/` 
 
-All tensorboard logs, trained agents and constructed graphs used for final evaluation are [here](TODO)
+All tensorboard logs, trained agents and constructed graphs used for final evaluation are [here](https://www.dropbox.com/sh/c01erglrt0o6jec/AAA3w5eF-LVQ_rGJNuiKujb9a?dl=0)
